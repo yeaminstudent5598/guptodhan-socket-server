@@ -13,7 +13,7 @@ const server = http.createServer(app);
 // সকেট কনফিগারেশন (Standalone Server এর জন্য path দরকার নেই, ডিফল্ট থাকবে)
 const io = new Server(server, {
   cors: {
-    origin: "*", // আপনার Vercel ডোমেইন পরে এখানে দিতে পারেন
+    origin: "https://www.guptodhandigital.com", // আপনার Vercel ডোমেইন পরে এখানে দিতে পারেন
     methods: ["GET", "POST"]
   }
 });
@@ -76,6 +76,10 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('❌ User Disconnected');
   });
+});
+
+app.get('/', (req, res) => {
+  res.send('🚀 Socket Server is running perfectly!');
 });
 
 const PORT = process.env.PORT || 5000;

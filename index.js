@@ -10,19 +10,22 @@ app.use(cors());
 
 const server = http.createServer(app);
 
-// সকেট কনফিগারেশন
+// সকেট কনফিগারেশন (Standalone Server এর জন্য path দরকার নেই, ডিফল্ট থাকবে)
 const io = new Server(server, {
   cors: {
-    origin: "*", // পরে এখানে আপনার Vercel ডোমেইন দেবেন
+    origin: "*", // আপনার Vercel ডোমেইন পরে এখানে দিতে পারেন
     methods: ["GET", "POST"]
   }
 });
 
-// MongoDB কানেকশন (আপনার মেইন প্রোজেক্টের ডাটাবেস ইউআরএল ব্যবহার করুন)
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log("✅ MongoDB Connected for Socket"))
-  .catch(err => console.log("❌ DB Error:", err));
+// MongoDB কানেকশন
+const dbUri = process.env.MONGODB_URI;
 
+mongoose.connect(dbUri)
+  .then(() => console.log("✅ MongoDB Connected successfully for Socket"))
+  .catch(err => console.log("❌ DB Error Details:", err.message));
+
+// মেসেজ স্কিমা (ডাটাবেসে মেসেজ সেভ করার জন্য)
 const messageSchema = new mongoose.Schema({
   conversation: mongoose.Schema.Types.ObjectId,
   sender: mongoose.Schema.Types.ObjectId,
@@ -33,15 +36,18 @@ const messageSchema = new mongoose.Schema({
 
 const Message = mongoose.model('Message', messageSchema);
 
+// সকেট ইভেন্ট হ্যান্ডেলার
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log(`📡 New User Connected: ${socket.id}`);
 
   socket.on('authenticate', (userId) => {
     socket.join(`user_${userId}`);
+    console.log(`👤 User ${userId} is now online`);
   });
 
   socket.on('join_conversation', (conversationId) => {
     socket.join(`conversation_${conversationId}`);
+    console.log(`💬 Joined Room: ${conversationId}`);
   });
 
   socket.on('send_message', async (data, callback) => {
@@ -55,16 +61,22 @@ io.on('connection', (socket) => {
         content
       });
 
+      // রুমে থাকা সবাইকে মেসেজ পাঠানো
       io.to(`conversation_${conversationId}`).emit('receive_message', newMessage);
       
+      // ✅ কলব্যাক পাঠানো জরুরি (Timeout এরর বন্ধ করতে)
       if (callback) callback({ success: true, data: newMessage });
+
     } catch (error) {
+      console.error("Save Error:", error.message);
       if (callback) callback({ success: false, error: error.message });
     }
   });
 
-  socket.on('disconnect', () => console.log('Disconnected'));
+  socket.on('disconnect', () => {
+    console.log('❌ User Disconnected');
+  });
 });
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(` Socket Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Socket Server running on port ${PORT}`));

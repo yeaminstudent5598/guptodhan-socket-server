@@ -13,7 +13,7 @@ const server = http.createServer(app);
 // সকেট কনফিগারেশন (Standalone Server এর জন্য path দরকার নেই, ডিফল্ট থাকবে)
 const io = new Server(server, {
   cors: {
-    origin: "https://www.guptodhandigital.com", // আপনার Vercel ডোমেইন পরে এখানে দিতে পারেন
+    origin: ["https://www.guptodhandigital.com", "http://localhost:3000"], // আপনার Vercel ডোমেইন পরে এখানে দিতে পারেন
     methods: ["GET", "POST"]
   }
 });

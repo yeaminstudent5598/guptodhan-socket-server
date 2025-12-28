@@ -16,7 +16,7 @@ app.use(cors({
 
 const server = http.createServer(app);
 
-// ২. সকেট সার্ভার ইনিশিয়ালাইজেশন
+// ২. সকেট সার্ভার
 const io = new Server(server, {
   cors: {
     origin: ["https://www.guptodhandigital.com", "http://localhost:3000"],
@@ -29,10 +29,19 @@ const io = new Server(server, {
 const MONGODB_URI = process.env.MONGODB_URI;
 
 mongoose.connect(MONGODB_URI)
-  .then(() => console.log("✅ MongoDB Connected successfully for Socket"))
+  .then(() => console.log("✅ MongoDB Connected"))
   .catch(err => console.error("❌ DB Connection Error:", err.message));
 
-// ৪. মেসেজ মডেল
+// ৪. ✅ User Schema এবং Model (ADDED)
+const userSchema = new mongoose.Schema({
+  name: String,
+  profilePicture: String,
+  email: String,
+}, { timestamps: true });
+
+const User = mongoose.model('User', userSchema);
+
+// ৫. Message মডেল
 const messageSchema = new mongoose.Schema({
   conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation' },
   sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -43,27 +52,43 @@ const messageSchema = new mongoose.Schema({
 
 const Message = mongoose.model('Message', messageSchema);
 
-// ৫. ইউজার অনলাইন স্ট্যাটাস ট্র্যাক করার জন্য
-const onlineUsers = new Map();
+// ৬. Conversation মডেল
+const conversationSchema = new mongoose.Schema({
+  ad: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassifiedAd', required: true },
+  participants: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }],
+  lastMessage: { type: mongoose.Schema.Types.ObjectId, ref: 'Message' },
+}, { timestamps: true });
 
-// ৬. হেলথ চেক রুট
+const Conversation = mongoose.model('Conversation', conversationSchema);
+
+// ৭. অনলাইন ইউজার ট্র্যাক করা
+const onlineUsers = new Map(); // userId -> { socketId, lastSeen }
+const userSockets = new Map(); // userId -> Set of socketIds
+
+// ৮. হেলথ চেক
 app.get('/', (req, res) => {
-  res.send('🚀 Guptodhan Real-time Chat Server is Live!');
+  res.send('🚀 Guptodhan Socket Server is Live!');
 });
 
-// ৭. সকেট ইভেন্ট হ্যান্ডলিং
+// ৯. সকেট ইভেন্ট
 io.on('connection', (socket) => {
   console.log(`📡 New connection: ${socket.id}`);
 
-  // ইউজারকে তার নিজস্ব রুমে জয়েন করানো
+  // ✅ ইউজার authenticate করা
   socket.on('authenticate', (userId) => {
     if (userId) {
       socket.join(`user_${userId}`);
-      onlineUsers.set(userId, { socketId: socket.id, lastSeen: new Date() });
-      console.log(`👤 User authenticated: ${userId}`);
-      console.log(`📊 Online users count: ${onlineUsers.size}`);
       
-      // সবাইকে বলুন যে এই ইউজার অনলাইন এসেছে
+      // ইউজার অনলাইন করা
+      if (!userSockets.has(userId)) {
+        userSockets.set(userId, new Set());
+      }
+      userSockets.get(userId).add(socket.id);
+      onlineUsers.set(userId, { socketId: socket.id, lastSeen: new Date() });
+      
+      console.log(`👤 User ${userId} authenticated (${userSockets.get(userId).size} connections)`);
+      
+      // সবাইকে অনলাইন স্ট্যাটাস পাঠান
       io.emit('user_online_status', {
         userId,
         isOnline: true,
@@ -72,138 +97,140 @@ io.on('connection', (socket) => {
     }
   });
 
-  // নির্দিষ্ট কনভারসেশন রুমে জয়েন করা
+  // ✅ Conversation এ join করা
   socket.on('join_conversation', (conversationId) => {
     if (conversationId) {
       socket.join(`conversation_${conversationId}`);
-      console.log(`💬 Socket ${socket.id} joined conversation room: conversation_${conversationId}`);
+      console.log(`💬 Socket joined conversation: ${conversationId}`);
     }
   });
 
-  // মেসেজ পাঠানো এবং সেভ করা
+  // ✅ মেসেজ পাঠানো (Bikroy.com এর মতো)
   socket.on('send_message', async (data, callback) => {
     try {
       const { conversationId, senderId, receiverId, content } = data;
 
-      console.log(`📤 Message from ${senderId} to ${receiverId}:`);
-      console.log(`   Content: ${content}`);
-      console.log(`   Conversation: ${conversationId}`);
+      console.log(`📤 Message: "${content}" from ${senderId} to ${receiverId}`);
 
-      // ✅ ডাটাবেসে মেসেজ সেভ করার সময় receiver এর lastSeen আপডেট করা
+      // ✅ Conversation verify করা
+      const conversation = await Conversation.findOne({
+        _id: new mongoose.Types.ObjectId(conversationId),
+        participants: { $in: [senderId, receiverId] }
+      });
+
+      if (!conversation) {
+        throw new Error('Conversation not found or access denied');
+      }
+
+      // ✅ Message save করা
       const newMessage = await Message.create({
-        conversation: conversationId,
-        sender: senderId,
-        receiver: receiverId,
-        content: content,
+        conversation: new mongoose.Types.ObjectId(conversationId),
+        sender: new mongoose.Types.ObjectId(senderId),
+        receiver: new mongoose.Types.ObjectId(receiverId),
+        content,
         isRead: false
       });
 
-      // ✅ মেসেজ populate করে পাঠান (sender info সহ)
-      const populatedMessage = await newMessage.populate('sender', 'name profilePicture');
+      // ✅ Sender information populate করা
+      await newMessage.populate('sender', 'name profilePicture');
 
-      console.log(`✅ Message saved with ID: ${newMessage._id}`);
+      console.log(`✅ Message saved: ${newMessage._id}`);
 
-      // ✅ কনভারসেশন রুমে থাকা সবাইকে রিয়েল-টাইমে মেসেজ পাঠানো
-      io.to(`conversation_${conversationId}`).emit('receive_message', {
+      // ✅ Last message update করা
+      await Conversation.findByIdAndUpdate(
+        conversationId,
+        { lastMessage: newMessage._id },
+        { new: true }
+      );
+
+      // ✅ Conversation এর সবাইকে message পাঠানো
+      const messagePayload = {
         _id: newMessage._id,
         conversation: conversationId,
         sender: {
           _id: senderId,
-          name: populatedMessage.sender?.name || 'Unknown'
+          name: newMessage.sender?.name || 'Unknown',
+          profilePicture: newMessage.sender?.profilePicture
         },
-        receiver: receiverId,
-        content: content,
+        receiver: new mongoose.Types.ObjectId(receiverId),
+        content,
         isRead: false,
         createdAt: newMessage.createdAt
-      });
+      };
 
-      console.log(`📬 Message broadcast to room: conversation_${conversationId}`);
+      io.to(`conversation_${conversationId}`).emit('receive_message', messagePayload);
+      console.log(`📬 Broadcast to conversation: ${conversationId}`);
 
-      // ✅ রিসিভারকে গ্লোবাল নোটিফিকেশন পাঠানো (যদি সে কনভারসেশনে না থাকে)
+      // ✅ Receiver কে notification পাঠানো (যদি conversation এ না থাকে)
       io.to(`user_${receiverId}`).emit('new_message_notification', {
-        type: 'message',
         conversationId,
         senderId,
-        senderName: populatedMessage.sender?.name || 'Unknown',
-        content: content,
+        senderName: newMessage.sender?.name || 'Unknown',
+        content,
         timestamp: newMessage.createdAt
       });
 
-      console.log(`🔔 Notification sent to user: ${receiverId}`);
-
-      // ✅ সাকসেস কলব্যাক
+      // ✅ Callback
       if (callback) {
-        callback({ 
-          success: true, 
-          data: newMessage,
-          message: 'Message sent successfully'
-        });
+        callback({ success: true, data: messagePayload });
       }
 
     } catch (error) {
-      console.error("❌ Message save error:", error.message);
-      if (callback) callback({ success: false, error: error.message });
-    }
-  });
-
-  // ✅ ডিসকানেক্ট করার সময় ইউজার অফলাইন করা
-  socket.on('disconnect', () => {
-    console.log(`❌ Socket disconnected: ${socket.id}`);
-    
-    // অনলাইন ইউজার থেকে খুঁজে বের করুন এবং রিমুভ করুন
-    let disconnectedUserId = null;
-    for (let [userId, data] of onlineUsers) {
-      if (data.socketId === socket.id) {
-        disconnectedUserId = userId;
-        onlineUsers.delete(userId);
-        break;
+      console.error("❌ Error:", error.message);
+      if (callback) {
+        callback({ success: false, error: error.message });
       }
     }
-
-    if (disconnectedUserId) {
-      const now = new Date();
-      console.log(`👤 User ${disconnectedUserId} went offline at ${now}`);
-      
-      // সবাইকে বলুন যে এই ইউজার অফলাইন হয়েছে
-      io.emit('user_online_status', {
-        userId: disconnectedUserId,
-        isOnline: false,
-        lastSeen: now
-      });
-    }
-
-    console.log(`📊 Online users count: ${onlineUsers.size}`);
   });
 
-  // ✅ ইউজার অনলাইন স্ট্যাটাস চেক করার জন্য
+  // ✅ ইউজার অনলাইন স্ট্যাটাস চেক করা
   socket.on('check_user_status', (userId, callback) => {
     const user = onlineUsers.get(userId);
-    if (user) {
-      if (callback) callback({
-        isOnline: true,
-        lastSeen: user.lastSeen
-      });
-    } else {
-      if (callback) callback({
-        isOnline: false,
-        lastSeen: null
+    if (callback) {
+      callback({
+        isOnline: !!user,
+        lastSeen: user?.lastSeen || null
       });
     }
   });
 
-  // ✅ সমস্ত অনলাইন ইউজার পাওয়ার জন্য
+  // ✅ সমস্ত অনলাইন ইউজার পাওয়া
   socket.on('get_online_users', (callback) => {
-    const onlineUsersList = Array.from(onlineUsers.entries()).map(([userId, data]) => ({
+    const onlineList = Array.from(onlineUsers.entries()).map(([userId, data]) => ({
       userId,
       lastSeen: data.lastSeen
     }));
-    if (callback) callback(onlineUsersList);
+    if (callback) callback(onlineList);
+  });
+
+  // ✅ Disconnect হওয়া
+  socket.on('disconnect', () => {
+    console.log(`❌ Socket disconnected: ${socket.id}`);
+
+    // সব ইউজারকে চেক করা
+    for (let [userId, socketIds] of userSockets) {
+      socketIds.delete(socket.id);
+      
+      if (socketIds.size === 0) {
+        userSockets.delete(userId);
+        const lastSeen = new Date();
+        onlineUsers.set(userId, { socketId: null, lastSeen });
+
+        console.log(`👤 User ${userId} went offline`);
+
+        // সবাইকে অফলাইন স্ট্যাটাস পাঠানো
+        io.emit('user_online_status', {
+          userId,
+          isOnline: false,
+          lastSeen
+        });
+      }
+    }
   });
 });
 
-// ৮. সার্ভার পোর্ট সেটআপ
+// ১০. সার্ভার চালু করা
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Socket Server is running on port ${PORT}`);
-  console.log(`🔗 CORS enabled for: ${process.env.VERCEL_URL || 'http://localhost:3000'}`);
+  console.log(`🚀 Socket Server running on port ${PORT}`);
 });

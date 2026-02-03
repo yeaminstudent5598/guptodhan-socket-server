@@ -9,7 +9,7 @@ const app = express();
 
 // ✅ CORS Configuration
 app.use(cors({
-  origin: ["https://www.guptodhandigital.com", "http://localhost:3000", "http://localhost:8000"],
+  origin: ["https://www.guptodhandigital.com", "http://localhost:3000", "https://www.guptodhandigital.com", "http://localhost:8000"], 
   methods: ["GET", "POST"],
   credentials: true
 }));
